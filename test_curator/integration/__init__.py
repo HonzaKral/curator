@@ -7,6 +7,7 @@ from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import ConnectionError
 
 from curator import curator
+from curator import es_repo_mgr
 
 from unittest import SkipTest, TestCase
 from mock import Mock
@@ -98,8 +99,9 @@ class CuratorTestCase(TestCase):
         if wait_for_yellow:
             self.client.cluster.health(wait_for_status='yellow')
 
-    def create_repository(self, name):
-        curator._create_repository(self.client, name, curator.create_repo_body(self.args))
+    def create_repository(self):
+        body = {'type':'fs', 'settings':{'location':self.args['location']}}
+        self.client.snapshot.create_repository(repository=self.args['repository'], body=body)
 
     def delete_repositories(self):
         result = self.client.snapshot.get_repository(repository='_all')
