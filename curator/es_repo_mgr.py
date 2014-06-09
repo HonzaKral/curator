@@ -142,9 +142,8 @@ def get_repository(client, repo_name):
 		logger.info("Repository {0} not found.  Error: {1}".format(repo_name, e))
 		return None
 
-def _create_repository(client, **kwargs):
+def _create_repository(client, dry_run=False, **kwargs):
 	"""Create repository with repo_name and body settings"""
-	dry_run = kwargs['dry_run'] if 'dry_run' in kwargs else False
 	if not dry_run:
 		try:
 			repo_name = kwargs['repository']
@@ -171,8 +170,7 @@ def _create_repository(client, **kwargs):
 	else:
 		logger.info("Would have attempted to create repository {}".format(kwargs['repository']))
 
-def _delete_repository(client, repository=None, **kwargs):
-	dry_run = kwargs['dry_run'] if 'dry_run' in kwargs else False
+def _delete_repository(client, repository=None, dry_run=False, **kwargs):
 	if not dry_run:
 		try:
 			logger.info('Deleting repository {0}...'.format(repository))

@@ -3,6 +3,7 @@
 import sys
 import time
 import logging
+import re
 from datetime import timedelta, datetime
 
 import elasticsearch
@@ -79,8 +80,9 @@ def make_parser():
     parser_allocation.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_allocation.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_allocation.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
-    parser_allocation.add_argument( '--older-than', required=True, help='Apply rule to indices older than n TIME_UNITs', type=int)
-    parser_allocation.add_argument( '--rule', required=True, help='Routing allocation rule to apply. Ex. tag=ssd', type=str)
+    parser_allocation.add_argument('--older-than', required=True, help='Apply rule to indices older than n TIME_UNITs', type=int)
+    parser_allocation.add_argument('--rule', required=True, help='Routing allocation rule to apply, e.g. tag=ssd', type=str)
+    parser_allocation.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
 
     # Bloom
     parser_bloom = subparsers.add_parser('bloom', help='Disable bloom filter cache for indices')
@@ -88,7 +90,8 @@ def make_parser():
     parser_bloom.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_bloom.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_bloom.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
-    parser_bloom.add_argument( '--older-than', required=True, help='Disable bloom filter cache for indices older than n TIME_UNITs', type=int)
+    parser_bloom.add_argument('--older-than', required=True, help='Disable bloom filter cache for indices older than n TIME_UNITs', type=int)
+    parser_bloom.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
 
     # Close
     parser_close = subparsers.add_parser('close', help='Close indices')
@@ -96,7 +99,8 @@ def make_parser():
     parser_close.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_close.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_close.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
-    parser_close.add_argument( '--older-than', required=True, help='Close indices older than n TIME_UNITs', type=int)
+    parser_close.add_argument('--older-than', required=True, help='Close indices older than n TIME_UNITs', type=int)
+    parser_close.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
 
     # Delete
     parser_delete = subparsers.add_parser('delete', help='Delete indices')
@@ -104,9 +108,10 @@ def make_parser():
     parser_delete.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_delete.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_delete.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
+    parser_delete.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
     delete_group = parser_delete.add_mutually_exclusive_group()
-    delete_group.add_argument( '--older-than', help='Delete indices older than n TIME_UNITs', type=int)
-    delete_group.add_argument( '--disk-space', help='Delete indices beyond DISK_SPACE gigabytes.', type=float)
+    delete_group.add_argument('--older-than', help='Delete indices older than n TIME_UNITs', type=int)
+    delete_group.add_argument('--disk-space', help='Delete indices beyond DISK_SPACE gigabytes.', type=float)
 
     # Optimize
     parser_optimize = subparsers.add_parser('optimize', help='Optimize indices')
@@ -114,8 +119,8 @@ def make_parser():
     parser_optimize.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_optimize.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_optimize.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
-    parser_optimize.add_argument( '--older-than', required=True, help='Optimize indices older than n TIME_UNITs', type=int)
-    parser_optimize.add_argument( '--max_num_segments', help='Optimize segment count to n segments per shard.', default=DEFAULT_ARGS['max_num_segments'], type=int)
+    parser_optimize.add_argument('--older-than', required=True, help='Optimize indices older than n TIME_UNITs', type=int)
+    parser_optimize.add_argument('--max_num_segments', help='Optimize segment count to n segments per shard.', default=DEFAULT_ARGS['max_num_segments'], type=int)
 
     # Show indices
     parser_show = subparsers.add_parser('show', help='Show indices or snapshots')
@@ -123,8 +128,9 @@ def make_parser():
     parser_show.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_show.add_argument('--repository', type=str, help='Repository name (required for --show-repositories)')
     show_group = parser_show.add_mutually_exclusive_group()
-    show_group.add_argument( '--show-indices', help='Show indices matching PREFIX', action='store_true')
-    show_group.add_argument( '--show-snapshots', help='Show snapshots in REPOSITORY', action='store_true')
+    show_group.add_argument('--show-indices', help='Show indices matching PREFIX', action='store_true')
+    show_group.add_argument('--show-snapshots', help='Show snapshots in REPOSITORY', action='store_true')
+    parser_show.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
 
     # Snapshot
     parser_snapshot = subparsers.add_parser('snapshot', help='Take snapshots of indices (Backup)')
@@ -132,6 +138,7 @@ def make_parser():
     parser_snapshot.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
     parser_snapshot.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
     parser_snapshot.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days', default=DEFAULT_ARGS['time_unit'], type=str)
+    parser_snapshot.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
     parser_snapshot.add_argument('--repository', required=True, type=str, help='Repository name')
 
     snapshot_group = parser_snapshot.add_mutually_exclusive_group()
@@ -212,7 +219,7 @@ def check_version(client):
         print('ERROR: Incompatible with version {0} of Elasticsearch.  Exiting.'.format(".".join(map(str,version_number))))
         sys.exit(1)
 
-def get_object_list(client, data_type='index', prefix='logstash-', repository=None, **kwargs):
+def get_object_list(client, data_type='index', prefix='logstash-', repository=None, exclude_pattern=None, **kwargs):
     """Return a list of indices or snapshots"""
     if data_type == 'index':
         object_list = get_indices(client, prefix)
@@ -225,7 +232,11 @@ def get_object_list(client, data_type='index', prefix='logstash-', repository=No
     else:
         object_list = []
         logger.error('data_type \'{0}\' is neither \'index\' nor \'snapshot\'.  Returning empty list.'.format(data_type))
-    return object_list
+    if exclude_pattern:
+        pattern = re.compile(exclude_pattern)
+        return filter(lambda x: not pattern.search(x), object_list)
+    else:
+        return object_list
     
 def find_expired_data(client, object_list=[], utc_now=None, time_unit='days', older_than=999999, prefix='logstash-', separator='.', **kwargs):
     """ Generator that yields expired objects (indices or snapshots).
