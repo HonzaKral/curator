@@ -58,12 +58,12 @@ def make_parser():
         sys.exit(1)
 
     # Common args
-    parser.add_argument('-v', '--version', action='version', version='%(prog)s '+__version__)
     parser.add_argument('--host', help='Elasticsearch host. Default: localhost', default=DEFAULT_ARGS['host'])
     parser.add_argument('--url_prefix', help='Elasticsearch http url prefix. Default: none', default=DEFAULT_ARGS['url_prefix'])
     parser.add_argument('--port', help='Elasticsearch port. Default: 9200', default=DEFAULT_ARGS['port'], type=int)
     parser.add_argument('--ssl', help='Connect to Elasticsearch through SSL. Default: false', action='store_true', default=DEFAULT_ARGS['ssl'])
     parser.add_argument('-t', '--timeout', help='Connection timeout in seconds. Default: 30', default=DEFAULT_ARGS['timeout'], type=int)
+    parser.add_argument('--master-only', dest='master_only', action='store_true', help='Verify that the node is the elected master before continuing', default=False)
     parser.add_argument('-n', '--dry-run', action='store_true', help='If true, does not perform any changes to the Elasticsearch indices.', default=DEFAULT_ARGS['dry_run'])
     parser.add_argument('-D', '--debug', dest='debug', action='store_true', help='Debug mode', default=DEFAULT_ARGS['debug'])
     parser.add_argument('--loglevel', dest='log_level', action='store', help='Log level', default=DEFAULT_ARGS['log_level'], type=str)
@@ -73,6 +73,19 @@ def make_parser():
     subparsers = parser.add_subparsers(
             title='Commands', dest='command', description='Select one of the following commands:',
             help='Run: ' + sys.argv[0] + ' COMMAND --help for command-specific help.')
+
+    # Alias
+    parser_alias = subparsers.add_parser('alias', help='Aliasing operations')
+    parser_alias.set_defaults(func=alias_loop)
+    parser_alias.add_argument('-p', '--prefix', help='Prefix for the indices. Indices that do not have this prefix are skipped. Default: logstash-', default=DEFAULT_ARGS['prefix'])
+    parser_alias.add_argument('-s', '--separator', help='TIME_UNIT separator. Default: .', default=DEFAULT_ARGS['separator'])
+    parser_alias.add_argument('-T', '--time-unit', dest='time_unit', action='store', help='Unit of time to reckon by: [days, hours] Default: days',
+                        default=DEFAULT_ARGS['time_unit'], type=str)
+    parser_alias.add_argument('--exclude-pattern', help='Exclude indices matching provided pattern, e.g. 2014.06.08', type=str, default=None)
+    parser_alias.add_argument('--alias', required=True, help='Alias name', type=str)
+    alias_group = parser_alias.add_mutually_exclusive_group()
+    alias_group.add_argument('--alias-older-than', help='Add indices older than n TIME_UNITs to alias', type=int)
+    alias_group.add_argument('--unalias-older-than', help='Remove indices older than n TIME_UNITs from alias', type=int)
 
     # Allocation
     parser_allocation = subparsers.add_parser('allocation', help='Apply required index routing allocation rule')
@@ -218,6 +231,11 @@ def check_version(client):
         print('Expected Elasticsearch version range > {0} < {1}'.format(".".join(map(str,version_min)),".".join(map(str,version_max))))
         print('ERROR: Incompatible with version {0} of Elasticsearch.  Exiting.'.format(".".join(map(str,version_number))))
         sys.exit(1)
+
+def is_master_node(client):
+    my_node_id = client.nodes.info('_local')['nodes'].keys()[0]
+    master_node_id = client.cluster.state(metric='master_node')['master_node']
+    return my_node_id == master_node_id
 
 def get_object_list(client, data_type='index', prefix='logstash-', repository=None, exclude_pattern=None, **kwargs):
     """Return a list of indices or snapshots"""
@@ -421,6 +439,38 @@ def _require_index(client, index_name, **kwargs):
       logger.info('Updating index setting index.routing.allocation.require.{0}={1}'.format(key,value))
       client.indices.put_settings(index=index_name, body='index.routing.allocation.require.{0}={1}'.format(key,value))
 
+def get_alias(client, alias):
+    if client.indices.exists_alias(alias):
+        return client.indices.get_alias(name=alias).keys()
+    else:
+        logger.error('Unable to find alias {0}.'.format(alias))
+        return False
+
+def _remove_from_alias(client, index_name, alias=None, **kwargs):
+    indices_in_alias = get_alias(client, alias)
+    if not indices_in_alias:
+        return True
+    if index_name in indices_in_alias:
+        client.indices.update_aliases(body={'actions': [{ 'remove': { 'index': index_name, 'alias': alias}}]})
+    else:
+        logger.info('Index {0} does not exist in alias {1}; skipping.'.format(index_name, alias))
+        return True
+
+def _add_to_alias(client, index_name, alias=None, **kwargs):
+    if not alias: # This prevents _all from being aliased by accident...
+        logger.error('No alias provided.')
+        return True
+    if not client.indices.exists_alias(alias):
+        logger.error('Skipping index {0}: Alias {1} does not exist.'.format(index_name, alias))
+        return True
+    else:
+        indices_in_alias = client.indices.get_alias(alias)
+        if not index_name in indices_in_alias:
+            client.indices.update_aliases(body={'actions': [{ 'add': { 'index': index_name, 'alias': alias}}]})
+        else:
+            logger.info('Skipping index {0}: Index already exists in alias {1}...'.format(index_name, alias))
+            return True
+    
 OP_MAP = {
     'allocation'  : (_require_index, {'op': 'update require allocation rules for', 'verbed':'index routing allocation updated', 'gerund': 'Updating required index routing allocation rules for'}),
     'bloom'       : (_bloom_index, {'op': 'disable bloom filter for', 'verbed': 'bloom filter disabled', 'gerund': 'Disabling bloom filter for'}),
@@ -452,6 +502,32 @@ def snap_latest_indices(client, most_recent=0, prefix='logstash-', dry_run=False
         # if no error was raised and we got here that means the operation succeeded
         logger.info('Snapshot operation for index {0} succeeded.'.format(index_name))
     logger.info('Snapshot \'latest\' {0} indices operations completed.'.format(most_recent))
+
+def alias_loop(client, dry_run=False, **kwargs):
+    logging.info("Beginning ALIAS operations...")
+    if kwargs['alias_older_than']:
+        kwargs['older_than'] = kwargs['alias_older_than']
+        op = _add_to_alias
+        words = ['add', 'to', 'added']
+    elif kwargs['unalias_older_than']:
+        kwargs['older_than'] = kwargs['unalias_older_than']
+        op = _remove_from_alias
+        words = ['remove', 'from', 'removed']
+    index_list = get_object_list(client, **kwargs)
+    expired_indices = find_expired_data(client, object_list=index_list, **kwargs)
+    for index_name, expiration in expired_indices:
+        if dry_run:
+            logger.info('Would have attempted to {0} index {1} {2} alias {3} because it is {4} older than the calculated cutoff.'.format(words[0], index_name, words[1], kwargs['alias'], expiration))
+            continue
+        else:
+            logger.info('Attempting to {0} index {1} {2} alias {3} because it is {4} older than cutoff.'.format(words[0], index_name, words[1], kwargs['alias'], expiration))
+
+        skipped = op(client, index_name, **kwargs)
+        if skipped:
+            continue
+        # if no error was raised and we got here that means the operation succeeded
+        logger.info('{0}: Successfully {1} {2} alias {3}.'.format(index_name, words[2], words[1], kwargs['alias']))
+    logger.info('Index ALIAS operations completed.')
 
 def command_loop(client, dry_run=False, **kwargs):
     command = kwargs['command']
@@ -521,6 +597,11 @@ def main():
 
     # Argparse nearly gets all conditions covered.
     # These remain because mutually exclusive arguments must be optional.
+    if arguments.command == 'alias':
+        if not arguments.alias_older_than and not arguments.unalias_older_than:
+            print('{0} delete: error: expect one of --alias-older-than or --unalias-older-than'.format(sys.argv[0]))
+            sys.exit(1)
+
     if arguments.command == 'delete':
         if not arguments.older_than and not arguments.disk_space:
             print('{0} delete: error: expect one of --older-than or --disk-space'.format(sys.argv[0]))
@@ -574,6 +655,10 @@ def main():
     # Verify the version is acceptable.
     check_version(client)
     
+    if arguments.master_only and not is_master_node(client):
+        logger.fatal('Master-only flag detected. Connected to non-master node. Aborting.')
+        sys.exit(1)
+
     # Execute the command specified in the arguments
     argdict = arguments.__dict__
     logging.debug("argdict = {}".format(argdict))

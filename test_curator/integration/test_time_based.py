@@ -64,3 +64,13 @@ class TestFindExpiredIndices(CuratorTestCase):
             expired
         )
 
+class TestTimeBasedAliasing(CuratorTestCase):
+    def test_curator_will_properly_alias_and_unalias_indices(self):
+        alias = 'testalias'
+        self.create_index('dummy')
+        self.client.indices.put_alias(index='dummy', name=alias)
+        self.create_indices(10)
+        curator.alias_loop(self.client, prefix=self.args['prefix'], alias=alias, alias_older_than=3, unalias_older_than=None)
+        self.assertEquals(8, len(self.client.indices.get_alias(name=alias)))
+        curator.alias_loop(self.client, prefix=self.args['prefix'], alias=alias, alias_older_than=None, unalias_older_than=3)
+        self.assertEquals(1, len(self.client.indices.get_alias(name=alias)))
