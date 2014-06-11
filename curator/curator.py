@@ -344,7 +344,7 @@ def create_snapshot_body(indices, ignore_unavailable=False, include_global_state
         "include_global_state": include_global_state,
         "partial": partial,
     }
-    if type(indices) is not type(list()):   # in case of a single value passed
+    if not isinstance(indices, list):   # in case of a single value passed
         indices = [indices]
     body["indices"] = ','.join(sorted(indices))
     return body
