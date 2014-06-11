@@ -179,7 +179,7 @@ def _delete_repository(client, repository=None, dry_run=False, **kwargs):
             logger.error("Error: {0}".format(e))
             return False
     else:
-        logger.info("Would have attempted to delete repository {}".format(repo_name))
+        logger.info("Would have attempted to delete repository {}".format(repository))
 
 def create_repo_body(repo_type='fs',
                      compress=True, concurrent_streams=None, chunk_size=None, max_restore_bytes_per_sec=None, max_snapshot_bytes_per_sec=None,
